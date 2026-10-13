@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UMBRA: The Other Me</title>
+<style>
+  /* ---------- Layout & theme ---------- */
+  :root { --bg:#05030d; --ink:#d9ccff; --glow:#8a5cff; --ice:#7fe3ff; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:"Courier New",Courier,monospace; overflow:hidden; }
+  #app { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  #hud { width:min(98vw,1100px); display:flex; gap:14px; align-items:center; justify-content:space-between;
+    padding:6px 4px; font-size:14px; flex-wrap:wrap; }
+  #hud .grp { display:flex; gap:14px; align-items:center; }
+  #hearts { color:#ff6fae; font-size:20px; letter-spacing:3px; text-shadow:0 0 8px #ff3d8b; }
+  #chamber { color:var(--ice); text-shadow:0 0 8px #3aa6ff; }
+  button { font:inherit; color:var(--ink); background:#17113a; border:2px solid #5b45c9; padding:6px 12px;
+    cursor:pointer; transition:background .15s, box-shadow .15s; }
+  button:hover, button:focus-visible { background:#2a1f66; box-shadow:0 0 12px var(--glow); outline:none; }
+  #wrap { position:relative; line-height:0; border:2px solid #2a1f66; box-shadow:0 0 40px rgba(138,92,255,.35); }
+  canvas { image-rendering:pixelated; image-rendering:crisp-edges; background:#000; }
+  #hint { position:absolute; left:0; right:0; bottom:10px; text-align:center; line-height:1.4; font-size:13px;
+    color:#bfe3ff; text-shadow:0 0 6px #000,0 0 10px #3aa6ff; pointer-events:none; padding:0 20px; transition:opacity .6s; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background:rgba(5,3,13,.86); text-align:center; line-height:1.5; padding:16px; }
+  .overlay.hidden { display:none; }
+  .overlay h1 { margin:0 0 4px; font-size:clamp(28px,6vw,64px); letter-spacing:.18em; color:#fff;
+    text-shadow:0 0 12px #8a5cff,0 0 32px #5b45c9,3px 3px 0 #2a1f66; }
+  .overlay h2 { margin:0 0 10px; font-size:clamp(22px,4vw,40px); color:#fff; text-shadow:0 0 14px #8a5cff; }
+  .overlay p { margin:4px 0; max-width:560px; font-size:clamp(12px,1.8vw,16px); }
+  .overlay .sub { color:var(--ice); margin-bottom:14px; }
+  .overlay button { margin:8px 6px 0; font-size:clamp(14px,2vw,20px); padding:10px 22px; }
+  .controls { margin:10px 0; padding:10px 16px; border:1px dashed #5b45c9; font-size:clamp(11px,1.6vw,14px); text-align:left; }
+  .controls b { color:var(--ice); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="hud">
+    <div class="grp"><span id="chamber">Chamber 1/3</span><span id="hearts"></span></div>
+    <div class="grp"><span id="prog"></span></div>
+    <div class="grp">
+      <button id="bPause">Pause</button>
+      <button id="bRestart">Restart</button>
+      <button id="bSound">Sound: On</button>
+    </div>
+  </div>
+  <div id="wrap">
+    <canvas id="c" width="480" height="272"></canvas>
+    <div id="hint"></div>
+    <div id="ov" class="overlay"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   UMBRA: The Other Me  -  single-file pixel puzzle platformer
+   ===================================================================== */
+
+// ---------- Constants ----------
+const T = 16, VW = 480, VH = 272, H = 17;     // tile size, view size, level height in tiles
+const DELAY = 110;                            // shadow lag in frames (~1.8 s at 60 fps)
+const GRACE = 40;                             // a switch stays lit this long after being released
+const SPEED = 1.5, GRAV = 0.22, JUMP = -4.4;  // physics
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+// ---------- Level definitions ----------
+// ops: [char, x, y, w, h] fill rectangles on the tile grid. '#' solid, '^' floor spike, 'v' ceiling spike.
+const LEVELS = [
+  { name: "The Awakening", w: 44, start: [2, 14],
+    hint: "Stand on a switch. Your shadow repeats your moves 1.8 seconds later. Be on the other switch when it arrives.",
+    ops: [["#",0,15,44,2],["#",0,0,1,17],["#",43,0,1,17],["#",0,0,44,1],
+          ["#",12,13,3,1],["#",16,11,3,1],["^",26,14,2,1],["#",34,13,1,2]],
+    switches: [[7,14],[17,10]], checks: [[22,14]], exit: [40,14] },
+  { name: "The Hollow Span", w: 56, start: [2, 14],
+    hint: "Cross the gap without stopping. Your shadow must reach the first switch while you hold the second.",
+    ops: [["#",0,15,12,2],["#",15,15,14,2],["#",32,15,24,2],
+          ["#",0,0,1,17],["#",55,0,1,17],["#",0,0,56,1],
+          ["#",13,13,3,1],["#",18,11,3,1],["^",22,14,2,1],["^",36,14,2,1],
+          ["#",40,13,3,1],["#",44,11,3,1],["#",48,9,3,1],["#",51,7,4,1],["^",44,14,6,1]],
+    switches: [[10,14],[19,10]], checks: [[26,14],[33,14]], exit: [53,6] },
+  { name: "Heart of Umbra", w: 60, start: [2, 14],
+    hint: "Spikes below and above. Release Space early for a lower hop.",
+    ops: [["#",0,15,60,2],["#",0,0,1,17],["#",59,0,1,17],["#",0,0,60,1],
+          ["#",8,13,2,1],["#",11,11,2,1],["#",14,9,3,1],["^",8,14,10,1],
+          ["^",26,14,2,1],["#",30,13,2,2],
+          ["#",33,12,2,1],["#",37,12,2,1],["#",41,12,2,1],["^",33,14,12,1],
+          ["v",37,10,2,1],["v",41,10,2,1],["#",52,13,1,2]],
+    switches: [[5,14],[15,8]], checks: [[20,14],[47,14]], exit: [56,14] }
+];
+
+// ---------- Game state ----------
+let st = "menu", lvl = 0, hearts = 3;
+let W, grid, tileCv, sw, cps, spawn, unlocked, p, hist, inv, frame = 0, trans = 0, shake = 0, hintT = 0;
+let parts = [], motes = [], cam = { x: 0, y: 0 }, mute = false, jumpBuf = 0, jumpHeld = false;
+const keys = { l: false, r: false };
+
+// ---------- Audio (tiny WebAudio synth) ----------
+let AC = null;
+function initAudio() { if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } } }
+function snd(f, d, type, v, slide) {
+  if (mute || !AC) return;
+  const o = AC.createOscillator(), g = AC.createGain(), t = AC.currentTime;
+  o.type = type || "square"; o.frequency.setValueAtTime(f, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, f + slide), t + d);
+  g.gain.setValueAtTime(v || 0.05, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + d);
+}
+const sfx = {
+  jump: () => snd(300, 0.15, "square", 0.04, 300),
+  land: () => snd(110, 0.08, "triangle", 0.05, -40),
+  hurt: () => { snd(200, 0.35, "sawtooth", 0.07, -150); },
+  sw:   () => { snd(520, 0.12, "sine", 0.07, 400); },
+  check:() => { snd(440, 0.1, "sine", 0.06); setTimeout(() => snd(660, 0.15, "sine", 0.06), 100); },
+  open: () => { [392, 523, 659, 784].forEach((f, i) => setTimeout(() => snd(f, 0.2, "triangle", 0.07), i * 90)); },
+  clear:() => { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => snd(f, 0.25, "sine", 0.07), i * 110)); }
+};
+
+// ---------- Level loading ----------
+function loadLevel(i) {
+  const L = LEVELS[i]; W = L.w;
+  grid = []; for (let y = 0; y < H; y++) grid.push(new Array(W).fill("."));
+  L.ops.forEach(o => { for (let y = o[2]; y < o[2] + o[4]; y++) for (let x = o[1]; x < o[1] + o[3]; x++) grid[y][x] = o[0]; });
+  sw = L.switches.map(s => ({ x: s[0], y: s[1], t: 0, was: false }));
+  cps = L.checks.map(c => ({ x: c[0], y: c[1], on: false }));
+  spawn = { x: L.start[0], y: L.start[1] };
+  unlocked = false; parts = []; inv = 0; hintT = 600;
+  document.getElementById("hint").textContent = L.hint;
+  document.getElementById("hint").style.opacity = 1;
+  prerender(); respawn();
+  cam.x = Math.max(0, Math.min(W * T - VW, p.x - VW / 2)); cam.y = 0;
+  if (!motes.length) for (let k = 0; k < 40; k++) motes.push({ x: Math.random() * VW, y: Math.random() * VH, s: 0.1 + Math.random() * 0.3, a: Math.random() * 6 });
+}
+// Put the player (and the shadow) at the current checkpoint
+function respawn() {
+  p = { x: spawn.x * T + 3, y: (spawn.y + 1) * T - 14, vx: 0, vy: 0, w: 10, h: 14, face: 1, on: false, coy: 0, anim: 0 };
+  const snap = { x: p.x, y: p.y, face: 1, anim: 0, air: false };
+  hist = []; for (let i = 0; i <= DELAY; i++) hist.push(snap);
+}
+
+// ---------- Pre-render static tiles to an offscreen canvas ----------
+function prerender() {
+  tileCv = document.createElement("canvas"); tileCv.width = W * T; tileCv.height = H * T;
+  const g = tileCv.getContext("2d");
+  for (let ty = 0; ty < H; ty++) for (let tx = 0; tx < W; tx++) {
+    const c = grid[ty][tx], x = tx * T, y = ty * T;
+    if (c === "#") {
+      g.fillStyle = (tx * 7 + ty * 13) % 3 ? "#1d1640" : "#241b4e"; g.fillRect(x, y, T, T);
+      g.fillStyle = "#130d2b"; g.fillRect(x, y + 7, T, 1); g.fillRect(x, y + 15, T, 1);   // brick seams
+      g.fillRect(x + ((ty % 2) ? 4 : 11), y, 1, 8); g.fillRect(x + ((ty % 2) ? 11 : 4), y + 8, 1, 8);
+      if ((tx * 5 + ty * 11) % 7 === 0) { g.fillStyle = "#2f2566"; g.fillRect(x + 6, y + 3, 3, 2); } // cracks
+      if (!(ty > 0 && grid[ty - 1][tx] === "#")) {                                           // glowing top edge
+        g.fillStyle = "#6a50e0"; g.fillRect(x, y, T, 2); g.fillStyle = "#3a2c85"; g.fillRect(x, y + 2, T, 1);
+      }
+    } else if (c === "^" || c === "v") {
+      for (let k = 0; k < 3; k++) for (let r = 0; r < 8; r++) {
+        const fr = c === "^" ? (r + 1) / 8 : (8 - r) / 8, w = Math.max(1, Math.round(fr * 5));
+        g.fillStyle = r === 0 && c === "^" || r === 7 && c === "v" ? "#fff" : "#b9c4ff";
+        g.fillRect(Math.round(x + k * 5.3 + 2.5 - w / 2) + 1, (c === "^" ? y + 8 + r : y + r), w, 1);
+      }
+    }
+  }
+}
+
+// ---------- Helpers ----------
+function solid(tx, ty) { if (tx < 0 || tx >= W || ty < 0) return true; if (ty >= H) return false; return grid[ty][tx] === "#"; }
+function hitSolid(x, y, w, h) {
+  const x0 = Math.floor(x / T), x1 = Math.floor((x + w - 0.001) / T), y0 = Math.floor(y / T), y1 = Math.floor((y + h - 0.001) / T);
+  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) if (solid(tx, ty)) return true;
+  return false;
+}
+const ov = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+function burst(x, y, n, col, spd, up) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * 6.283, s = Math.random() * spd;
+    parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - (up || 0), life: 25 + Math.random() * 25, max: 50, col, sz: 1 + (Math.random() < 0.3 ? 1 : 0) }); }
+}
+function spikeHit(r) {                      // does rect r touch any spike hitbox?
+  const x0 = Math.floor(r.x / T), x1 = Math.floor((r.x + r.w - 1) / T), y0 = Math.floor(r.y / T), y1 = Math.floor((r.y + r.h - 1) / T);
+  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
+    if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
+    const c = grid[ty][tx];
+    if (c === "^" && ov(r, { x: tx * T + 2, y: ty * T + 8, w: 12, h: 8 })) return true;
+    if (c === "v" && ov(r, { x: tx * T + 2, y: ty * T, w: 12, h: 8 })) return true;
+  }
+  return false;
+}
+
+// ---------- Damage / death ----------
+function hurt() {
+  hearts--; sfx.hurt(); shake = 12;
+  burst(p.x + 5, p.y + 7, 24, "#ff6fae", 2.5, 1);
+  if (hearts <= 0) { st = "over"; showOv(overHTML()); return; }
+  respawn(); inv = 90;
+}
+
+// ---------- Main update (runs at fixed 60 fps) ----------
+function update() {
+  frame++;
+  if (st === "trans") {                                   // short celebration between chambers
+    updParts(); if (--trans <= 0) { if (lvl >= LEVELS.length - 1) { st = "win"; showOv(winHTML()); } else { lvl++; loadLevel(lvl); st = "play"; } }
+    return;
+  }
+  // --- player input & movement ---
+  const ax = (keys.r ? 1 : 0) - (keys.l ? 1 : 0);
+  p.vx += (ax * SPEED - p.vx) * 0.4; if (Math.abs(p.vx) < 0.05) p.vx = 0;
+  if (ax) p.face = ax;
+  if (jumpBuf > 0) jumpBuf--;
+  p.coy = p.on ? 6 : Math.max(0, p.coy - 1);
+  if (jumpBuf > 0 && p.coy > 0) { p.vy = JUMP; p.coy = 0; jumpBuf = 0; p.on = false; sfx.jump(); burst(p.x + 5, p.y + 14, 6, "#8a5cff", 1, 0); }
+  if (!jumpHeld && p.vy < -1.5) p.vy = -1.5;              // variable jump height
+
+  p.x += p.vx;                                            // horizontal move + wall collision
+  if (hitSolid(p.x, p.y, p.w, p.h)) {
+    if (p.vx > 0) p.x = Math.floor((p.x + p.w) / T) * T - p.w; else p.x = (Math.floor(p.x / T) + 1) * T;
+    p.vx = 0;
+  }
+  p.vy = Math.min(6, p.vy + GRAV); p.y += p.vy; p.on = false; // vertical move + floor/ceiling collision
+  if (hitSolid(p.x, p.y, p.w, p.h)) {
+    if (p.vy > 0) { p.y = Math.floor((p.y + p.h) / T) * T - p.h; p.on = true; if (p.vy > 2.5) { sfx.land(); burst(p.x + 5, p.y + 14, 5, "#6a50e0", 1, 0); } }
+    else p.y = (Math.floor(p.y / T) + 1) * T;
+    p.vy = 0;
+  }
+  p.anim += Math.abs(p.vx) * 0.15;
+
+  // --- record history; the shadow is the player's state DELAY frames ago ---
+  hist.push({ x: p.x, y: p.y, face: p.face, anim: p.anim, air: !p.on }); hist.shift();
+  const sh = hist[0];
+  if (frame % 3 === 0) burst(sh.x + 5, sh.y + 7, 1, "#b04dff", 0.4, 0.2);
+
+  // --- hazards ---
+  if (inv > 0) inv--;
+  if (p.y > H * T + 30) { hurt(); return; }               // fell into a pit
+  if (inv === 0 && spikeHit(p)) { hurt(); return; }
+
+  // --- checkpoints ---
+  cps.forEach(c => {
+    if (!c.on && ov(p, { x: c.x * T, y: (c.y - 1) * T, w: T, h: 2 * T })) {
+      cps.forEach(o => o.on = false); c.on = true; spawn = { x: c.x, y: c.y }; sfx.check(); burst(c.x * T + 8, c.y * T, 16, "#7fe3ff", 2, 1);
+    }
+  });
+
+  // --- switches: pressed by the player OR the shadow ---
+  const shR = { x: sh.x, y: sh.y, w: 10, h: 14 };
+  sw.forEach(s => {
+    const plate = { x: s.x * T + 1, y: s.y * T + 10, w: 14, h: 6 };
+    const pressed = ov(p, plate) || ov(shR, plate);
+    if (pressed) s.t = GRACE; else if (s.t > 0) s.t--;
+    const on = s.t > 0; if (on && !s.was) { sfx.sw(); burst(s.x * T + 8, s.y * T + 12, 14, "#7fe3ff", 1.8, 1); } s.was = on;
+  });
+  if (!unlocked && sw.every(s => s.t > 0)) { unlocked = true; sfx.open(); shake = 8; const e = LEVELS[lvl].exit; burst(e[0] * T + 8, e[1] * T - 8, 30, "#ffffff", 2.5, 0); }
+
+  // --- exit ---
+  const e = LEVELS[lvl].exit;
+  if (unlocked && ov(p, { x: e[0] * T + 2, y: (e[1] - 1) * T, w: 12, h: 2 * T })) {
+    sfx.clear(); burst(p.x + 5, p.y + 7, 50, "#bfe3ff", 3, 0); st = "trans"; trans = 100;
+  }
+
+  // --- camera (smooth follow) ---
+  const tx = Math.max(0, Math.min(W * T - VW, p.x + 5 - VW / 2 + p.vx * 12));
+  cam.x += (tx - cam.x) * 0.1; cam.y = 0;
+  if (shake > 0) shake--;
+  if (hintT > 0 && --hintT === 0) document.getElementById("hint").style.opacity = 0;
+  updParts(); updHUD();
+}
+function updParts() {
+  parts.forEach(q => { q.x += q.vx; q.y += q.vy; q.vy += 0.02; q.life--; });
+  parts = parts.filter(q => q.life > 0);
+}
+
+// ---------- Drawing ----------
+function glow(x, y, r, col, a) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.globalAlpha = a; ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); ctx.globalAlpha = 1;
+}
+function drawChar(x, y, face, anim, air, body, edge, eye, alpha) {
+  ctx.globalAlpha = alpha; x = Math.round(x); y = Math.round(y);
+  const step = air ? 1 : Math.floor(anim) % 2;
+  ctx.fillStyle = edge; ctx.fillRect(x, y + 10, 4, 4 - step); ctx.fillRect(x + 6, y + 10, 4, 3 + step);   // legs
+  ctx.fillRect(x, y + 1, 10, 10);                                                                           // outline/glow body
+  ctx.fillStyle = body; ctx.fillRect(x + 1, y + 2, 8, 8); ctx.fillRect(x + 2, y, 6, 3);                    // body + hood
+  ctx.fillStyle = eye; ctx.fillRect(x + (face > 0 ? 5 : 2), y + 3, 2, 2);                                  // eye
+  ctx.globalAlpha = 1;
+}
+function draw() {
+  ctx.fillStyle = "#07041a"; ctx.fillRect(0, 0, VW, VH);
+  const g = ctx.createLinearGradient(0, 0, 0, VH); g.addColorStop(0, "#0d0830"); g.addColorStop(1, "#1a0d3d");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH);
+  // parallax silhouette pillars
+  ctx.fillStyle = "#0f0a26";
+  for (let i = 0; i < 9; i++) { const w = 18 + (i * 37) % 30, x = ((i * 97 - cam.x * 0.3) % 800 + 800) % 800 - 80; ctx.fillRect(x, 40 + (i * 23) % 60, w, VH); ctx.fillRect(x - 4, 36 + (i * 23) % 60, w + 8, 6); }
+  // drifting motes
+  motes.forEach(m => { m.y -= m.s; m.a += 0.03; if (m.y < -2) { m.y = VH + 2; } ctx.fillStyle = (Math.sin(m.a) > 0) ? "#7fe3ff" : "#8a5cff"; ctx.globalAlpha = 0.5; ctx.fillRect(m.x, m.y, 1, 1); ctx.globalAlpha = 1; });
+
+  if (!p) return;
+  const sx = Math.round(-cam.x + (shake ? (Math.random() - 0.5) * 4 : 0)), sy = shake ? Math.round((Math.random() - 0.5) * 4) : 0;
+  ctx.save(); ctx.translate(sx, sy);
+  ctx.drawImage(tileCv, 0, 0);
+
+  // checkpoints
+  cps.forEach(c => {
+    const x = c.x * T, y = c.y * T;
+    ctx.fillStyle = "#3a2c85"; ctx.fillRect(x + 7, y - 14, 2, 30 - 14);
+    ctx.fillStyle = c.on ? "#7fe3ff" : "#5b45c9"; ctx.fillRect(x + 9, y - 14, 6, 5); ctx.fillRect(x + 9, y - 9, 4, 2);
+    if (c.on) glow(x + 8, y - 8, 22, "#7fe3ff", 0.35 + Math.sin(frame * 0.1) * 0.1);
+  });
+  // switches
+  sw.forEach(s => {
+    const x = s.x * T, y = s.y * T, on = s.t > 0;
+    ctx.fillStyle = "#2c2456"; ctx.fillRect(x + 1, y + 13, 14, 3);
+    ctx.fillStyle = on ? "#7fe3ff" : "#8a5cff"; ctx.fillRect(x + 3, on ? y + 12 : y + 10, 10, on ? 1 : 3);
+    ctx.fillStyle = "#fff"; if (on) ctx.fillRect(x + 5, y + 12, 6, 1);
+    glow(x + 8, y + 12, on ? 28 : 16, on ? "#7fe3ff" : "#8a5cff", on ? 0.55 : 0.3);
+  });
+  // exit portal
+  const e = LEVELS[lvl].exit, ex = e[0] * T, ey = (e[1] - 1) * T, pulse = Math.sin(frame * 0.12);
+  ctx.fillStyle = "#3a2c85"; ctx.fillRect(ex - 1, ey - 2, 18, 34); ctx.fillStyle = "#0a0620"; ctx.fillRect(ex + 1, ey, 14, 32);
+  if (unlocked) {
+    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(ex + 2, ey + 1, 12, 31); ctx.fillStyle = "#fff"; ctx.fillRect(ex + 5 + pulse * 2, ey + 4, 4, 24);
+    glow(ex + 8, ey + 16, 46, "#7fe3ff", 0.55 + pulse * 0.1);
+  } else {
+    ctx.fillStyle = "#5b1f4a"; for (let i = 0; i < 4; i++) ctx.fillRect(ex + 3 + i * 3, ey + 2, 1, 29);
+    glow(ex + 8, ey + 16, 22, "#b0306a", 0.25);
+  }
+  // shadow (delayed copy) with glow
+  const sh = hist[0];
+  glow(sh.x + 5, sh.y + 7, 26, "#b04dff", 0.45);
+  drawChar(sh.x, sh.y, sh.face, sh.anim, sh.air, "#150a2e", "#b04dff", "#ffffff", 0.92);
+  // player (blink while invulnerable)
+  if (!(inv > 0 && Math.floor(frame / 4) % 2)) {
+    glow(p.x + 5, p.y + 7, 28, "#7fb2ff", 0.4);
+    drawChar(p.x, p.y, p.face, p.anim, !p.on, "#f1eeff", "#7fb2ff", "#2a1f5c", 1);
+  }
+  // particles
+  parts.forEach(q => { ctx.globalAlpha = Math.max(0, q.life / q.max); ctx.fillStyle = q.col; ctx.fillRect(Math.round(q.x), Math.round(q.y), q.sz, q.sz); });
+  ctx.globalAlpha = 1; ctx.restore();
+
+  // vignette for darkness
+  const vg = ctx.createRadialGradient(VW / 2, VH / 2, 90, VW / 2, VH / 2, 330);
+  vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,10,0.6)");
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, VW, VH);
+
+  if (st === "trans") {                                   // chamber cleared banner
+    ctx.fillStyle = "rgba(5,3,13," + Math.min(0.7, (100 - trans) / 30) + ")"; ctx.fillRect(0, 0, VW, VH);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 20px 'Courier New',monospace"; ctx.textAlign = "center";
+    ctx.fillText(lvl >= LEVELS.length - 1 ? "The final door opens..." : "Chamber cleared", VW / 2, VH / 2); ctx.textAlign = "left";
+  }
+}
+
+// ---------- HUD & overlays ----------
+let lastHud = "";
+function updHUD() {
+  const n = sw.filter(s => s.t > 0).length;
+  const h = "Chamber " + (lvl + 1) + "/" + LEVELS.length + " - " + LEVELS[lvl].name + "|" + "♥".repeat(hearts) + "♡".repeat(3 - hearts) + "|" + "Switches " + n + "/2  Exit: " + (unlocked ? "OPEN" : "LOCKED");
+  if (h === lastHud) return; lastHud = h; const a = h.split("|");
+  document.getElementById("chamber").textContent = a[0]; document.getElementById("hearts").textContent = a[1]; document.getElementById("prog").textContent = a[2];
+}
+const ovEl = document.getElementById("ov");
+function showOv(html) { ovEl.innerHTML = html; ovEl.classList.remove("hidden"); }
+function hideOv() { ovEl.classList.add("hidden"); }
+const menuHTML = () => `<h1>UMBRA</h1><div class="sub">The Other Me</div>
+  <p>You are trapped in the dark. Your shadow is the only way out, and it remembers everything you do.</p>
+  <div class="controls"><b>A / D</b> or <b>Left / Right</b>: move<br><b>Space</b> (or Up / W): jump<br><b>P</b> or <b>Esc</b>: pause &nbsp; <b>R</b>: restart chamber &nbsp; <b>M</b>: mute<br>
+  Your shadow copies you about 1.8 seconds later. Hold <b>both</b> switches at once to open the exit.</div>
+  <button onclick="startGame()">Start Game</button>`;
+const pauseHTML = () => `<h2>Paused</h2><p>The shadows wait.</p><button onclick="togglePause()">Resume</button><button onclick="restartChamber()">Restart chamber</button><button onclick="toMenu()">Main menu</button>`;
+const overHTML = () => `<h2>The dark took you</h2><p>All hearts lost in chamber ${lvl + 1}.</p><button onclick="restartChamber()">Retry chamber</button><button onclick="toMenu()">Main menu</button>`;
+const winHTML = () => `<h1>FREE</h1><div class="sub">You and your shadow stepped into the light.</div><p>All three chambers cleared.</p><button onclick="startGame()">Play Again</button>`;
+
+// ---------- Game flow ----------
+function startGame() { initAudio(); lvl = 0; hearts = 3; lastHud = ""; loadLevel(0); st = "play"; hideOv(); updHUD(); }
+function restartChamber() { initAudio(); hearts = 3; lastHud = ""; loadLevel(lvl); st = "play"; hideOv(); updHUD(); }
+function toMenu() { st = "menu"; lvl = 0; hearts = 3; loadLevel(0); lastHud = ""; updHUD(); showOv(menuHTML()); }
+function togglePause() {
+  if (st === "play") { st = "pause"; showOv(pauseHTML()); document.getElementById("bPause").textContent = "Resume"; }
+  else if (st === "pause") { st = "play"; hideOv(); document.getElementById("bPause").textContent = "Pause"; }
+  if (st === "play") document.getElementById("bPause").textContent = "Pause";
+}
+
+// ---------- Input ----------
+addEventListener("keydown", e => {
+  initAudio(); const k = e.key;
+  if ([" ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(k)) e.preventDefault();
+  if (k === "a" || k === "A" || k === "ArrowLeft") keys.l = true;
+  if (k === "d" || k === "D" || k === "ArrowRight") keys.r = true;
+  if (k === " " || k === "ArrowUp" || k === "w" || k === "W") { if (!e.repeat) jumpBuf = 7; jumpHeld = true; }
+  if (e.repeat) return;
+  if (k === "p" || k === "P" || k === "Escape") togglePause();
+  if ((k === "r" || k === "R") && (st === "play" || st === "pause" || st === "over")) restartChamber();
+  if (k === "m" || k === "M") toggleSound();
+  if (k === "Enter" && st === "menu") startGame();
+});
+addEventListener("keyup", e => {
+  const k = e.key;
+  if (k === "a" || k === "A" || k === "ArrowLeft") keys.l = false;
+  if (k === "d" || k === "D" || k === "ArrowRight") keys.r = false;
+  if (k === " " || k === "ArrowUp" || k === "w" || k === "W") jumpHeld = false;
+  if (k === " ") e.preventDefault();
+});
+addEventListener("blur", () => { keys.l = keys.r = false; jumpHeld = false; if (st === "play") togglePause(); });
+function toggleSound() { mute = !mute; document.getElementById("bSound").textContent = "Sound: " + (mute ? "Off" : "On"); }
+document.getElementById("bPause").onclick = e => { e.target.blur(); if (st === "play" || st === "pause") togglePause(); };
+document.getElementById("bRestart").onclick = e => { e.target.blur(); if (st !== "menu" && st !== "win") restartChamber(); };
+document.getElementById("bSound").onclick = e => { e.target.blur(); initAudio(); toggleSound(); };
+ovEl.addEventListener("click", e => { if (e.target.tagName === "BUTTON") e.target.blur(); });
+
+// ---------- Responsive canvas ----------
+function fit() {
+  const hudH = document.getElementById("hud").offsetHeight + 12;
+  const s = Math.min((innerWidth * 0.98) / VW, (innerHeight - hudH) / VH);
+  cv.style.width = Math.floor(VW * s) + "px"; cv.style.height = Math.floor(VH * s) + "px";
+}
+addEventListener("resize", fit);
+
+// ---------- Main loop (fixed timestep) ----------
+let last = performance.now(), acc = 0;
+function loop(t) {
+  acc += Math.min(100, t - last); last = t;
+  while (acc >= 1000 / 60) { if (st === "play" || st === "trans") update(); acc -= 1000 / 60; }
+  draw(); requestAnimationFrame(loop);
+}
+
+// ---------- Boot ----------
+loadLevel(0); updHUD(); showOv(menuHTML()); fit(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
